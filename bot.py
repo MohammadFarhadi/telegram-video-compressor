@@ -73,7 +73,7 @@ def compress_video(input_path: Path, output_path: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
-# ---------- Helper: extract video file from a message ----------
+# ------------------------ Helpers--------------------------
 def get_video_from_message(message: Message):
     """
     Given a Telegram message, return (file_obj, file_name) if it contains a video,
@@ -94,6 +94,13 @@ def get_video_from_message(message: Message):
     # No video
     return None, None
 
+async def delete_later(msg: Message, delay: int = 10):
+    """Delete a message after `delay` seconds."""
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except TelegramError as e:
+        print("delete_later failed:", repr(e))
 
 # ---------- /start command ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -113,6 +120,7 @@ async def compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if message is None:
         return
 
+    warning_msg = None
     # 1️⃣ اول سعی می‌کنیم خود همین پیام ویدیو داشته باشه
     media_obj, file_name = get_video_from_message(message)
 
@@ -154,12 +162,31 @@ async def compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         original_size = input_path.stat().st_size / (1024 * 1024)
         compressed_size = output_path.stat().st_size / (1024 * 1024)
         #هشدار برای اینکه اگر حجمش زیاد هست انتظارشو داشته باشه که تایم اوت بخوره
-        if compressed_size > 45:  # مثلا بیشتر از 45MB
-            warning_msg =   f"حجم ویدیو بعد از فشرده‌سازی هنوز {compressed_size:.1f}MB است، "
-            "ممکنه روی این اینترنت timeout بخوره 🥲"
-            await message.reply_text(
-                warning_msg,
+        if (compressed_size > 45):  # مثلا بیشتر از 45MB
+            warning_msg = await message.reply_text(
+                f"حجم ویدیو بعد از فشرده‌سازی هنوز {compressed_size:.1f}MB است.\n"
+                "ممکنه روی این اینترنت timeout بخوره 🥲"
             )
+        #فحش برای وقتی که هی داره کامپرس می کنه ولی حجمش دیگه کم نمیشه
+        if (original_size <= compressed_size):
+            # پیام به کاربر
+            limit_erorr_msg = await message.reply_text(
+                "این ویدئو رو بیشتر از این نمی‌شه کاهش حجم داد، زور نزن اینقدر 😅"
+            )
+            asyncio.create_task(delete_later(limit_erorr_msg, delay=10))
+
+            # تمیزکاری: حذف پیام‌های موقت
+            try:
+                await processing_msg.delete()
+                await message.delete()
+                if warning_msg is not None:
+                    await warning_msg.delete()
+            except TelegramError as e:
+                print("delete failed:", repr(e))
+
+            return  # 👈 دیگه ادامه نده
+
+        #ارسالی فایلی کاهش حجم داده شده
         try:
             await message.reply_video(
                 video=output_path.open("rb"),
@@ -169,15 +196,23 @@ async def compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     f"حجم جدید: {compressed_size:.2f} MB"
                 ),
             )
-        except TimedOut as e:
-            print("TimedOut while sending video:", repr(e))
+        except TimedOut:
+            # پیام خطا
+            err_msg = await message.reply_text(
+                "ارسال ویدیو طول کشید و timeout شد 😕 دوباره امتحان کن."
+            )
+            # بعد از مثلاً ۱۰ ثانیه پاکش کن
+            asyncio.create_task(delete_later(err_msg, delay=10))
         finally:
-            #این بلاک حتی اگر بالا error بده باز هم اجرا می‌شود
+            # این بلاک حتی اگر بالا error بده باز هم اجرا می‌شود
             try:
                 await processing_msg.delete()
                 await message.delete()
+                if warning_msg is not None:
+                    await warning_msg.delete()
             except TelegramError as e:
                 print("delete failed:", repr(e))
+
 
 
 
