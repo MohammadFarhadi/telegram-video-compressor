@@ -3,6 +3,9 @@ import subprocess
 import tempfile
 import os
 from pathlib import Path
+from telegram.error import TelegramError, TimedOut, BadRequest
+from telegram.request import HTTPXRequest
+
 
 from telegram import Update, Message
 from telegram.ext import (
@@ -126,7 +129,8 @@ async def compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    await message.reply_text("✅ ویدیو رو گرفتم، دارم فشرده‌اش می‌کنم...")
+    processing_msg = await message.reply_text("ویدیو رو گرفتم، دارم فشرده‌اش می‌کنم✅...")
+
 
     # اینجا media_obj یا video هست یا document (ویدئویی)
     file_obj = await media_obj.get_file()
@@ -144,34 +148,104 @@ async def compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             compress_video(input_path, output_path)
         except subprocess.CalledProcessError:
-            await message.reply_text("❌ یک مشکلی در حین فشرده‌سازی پیش اومد.")
+            await message.reply_text("یک مشکلی در حین فشرده‌سازی پیش اومد.❌")
             return
 
         original_size = input_path.stat().st_size / (1024 * 1024)
         compressed_size = output_path.stat().st_size / (1024 * 1024)
+        #هشدار برای اینکه اگر حجمش زیاد هست انتظارشو داشته باشه که تایم اوت بخوره
+        if compressed_size > 45:  # مثلا بیشتر از 45MB
+            warning_msg =   f"حجم ویدیو بعد از فشرده‌سازی هنوز {compressed_size:.1f}MB است، "
+            "ممکنه روی این اینترنت timeout بخوره 🥲"
+            await message.reply_text(
+                warning_msg,
+            )
+        try:
+            await message.reply_video(
+                video=output_path.open("rb"),
+                caption=(
+                    "🎬 این هم نسخه‌ی فشرده‌شده.\n"
+                    f"حجم قبلی: {original_size:.2f} MB\n"
+                    f"حجم جدید: {compressed_size:.2f} MB"
+                ),
+            )
+        except TimedOut as e:
+            print("TimedOut while sending video:", repr(e))
+        finally:
+            #این بلاک حتی اگر بالا error بده باز هم اجرا می‌شود
+            try:
+                await processing_msg.delete()
+                await message.delete()
+            except TelegramError as e:
+                print("delete failed:", repr(e))
 
-        await message.reply_video(
-            video=output_path.open("rb"),
-            caption=(
-                "🎬 این هم نسخه‌ی فشرده‌شده.\n"
-                f"حجم قبلی: {original_size:.2f} MB\n"
-                f"حجم جدید: {compressed_size:.2f} MB"
-            ),
-        )
+
+
+
+
+
+async def inspect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message is None:
+        return
+
+    # حتماً باید روی یک پیام ریپلای کرده باشی
+    if message.reply_to_message is None:
+        await message.reply_text("برای استفاده از /inspect باید روی یک پیام Reply کنی 🙂")
+        return
+
+    target = message.reply_to_message  # همون پیامی که روش ریپلای کردی
+
+    lines = []
+    lines.append("🔍 Message inspection:")
+
+    # from_user ممکنه None باشه (مثلاً بعضی چنل‌ها)
+    from_user = getattr(target, "from_user", None)
+    lines.append(f"- from user: {from_user.id if from_user else 'unknown'}")
+
+    lines.append(f"- has video: {bool(getattr(target, 'video', None))}")
+    lines.append(f"- has document: {bool(getattr(target, 'document', None))}")
+    lines.append(f"- has animation: {bool(getattr(target, 'animation', None))}")
+    lines.append(f"- has video_note: {bool(getattr(target, 'video_note', None))}")
+    lines.append(f"- has photo: {bool(getattr(target, 'photo', None))}")
+    lines.append(f"- has caption: {bool(getattr(target, 'caption', None))}")
+
+    if target.document:
+        lines.append(f"- document mime_type: {target.document.mime_type}")
+        lines.append(f"- document file_name: {target.document.file_name}")
+
+    if target.video:
+        lines.append(f"- video mime_type: {target.video.mime_type}")
+        lines.append(f"- video file_name: {target.video.file_name}")
+
+    # برای لاگ کامل در ترمینال، اگر خواستی:
+    # print(target.to_dict())
+
+    await message.reply_text("\n".join(lines))
 
 
 # ---------- Main entry ----------
 def main() -> None:
-    # اینجا دیگه async نیست
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    request = HTTPXRequest(
+        connect_timeout=30,   # زمان صبر برای وصل شدن به سرور تلگرام
+        read_timeout=180,     # زمان صبر برای دریافت جواب (اینو زیاد کن)
+        write_timeout=180,    # زمان صبر برای آپلود داده (ویدئو)
+        pool_timeout=30,
+    )
+
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("compress", compress_command))
+    app.add_handler(CommandHandler("inspect", inspect_command))
 
     print("Bot is running... Press Ctrl+C to stop.")
-    # اینجا هم بدون await
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
