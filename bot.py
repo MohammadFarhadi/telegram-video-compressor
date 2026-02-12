@@ -121,20 +121,29 @@ async def compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     warning_msg = None
+
+    #این متغیر تعریف شده که روی پیام منبع ریپلای بزنه
+    source_msg: Message = message  # پیش‌فرض: خود پیام کامند
+
     # 1️⃣ اول سعی می‌کنیم خود همین پیام ویدیو داشته باشه
     media_obj, file_name = get_video_from_message(message)
 
     # 2️⃣ اگر خود پیام ویدیو نداشت، می‌ریم سراغ پیامی که بهش ریپلای شده
     if media_obj is None and message.reply_to_message:
         media_obj, file_name = get_video_from_message(message.reply_to_message)
+        source_msg = message.reply_to_message  # منبع ویدیو این‌جاست
+
 
     # 3️⃣ اگر هنوز هم ویدیو نداریم، به کاربر بگو چی‌کار باید بکنه
     if media_obj is None:
-        await message.reply_text(
+        file_not_found_msg = await message.reply_text(
             "برای استفاده از /compress باید یا:\n"
             "📌 همون پیامی که می‌فرستی خودش ویدیو داشته باشه (با کپشن /compress)،\n"
             "یا این‌که روی یک ویدیو Reply کنی و /compress رو بفرستی. 🙂"
         )
+
+        asyncio.create_task(delete_later(file_not_found_msg, delay=10))
+        await message.delete()
         return
 
     processing_msg = await message.reply_text("ویدیو رو گرفتم، دارم فشرده‌اش می‌کنم✅...")
@@ -188,7 +197,7 @@ async def compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         #ارسالی فایلی کاهش حجم داده شده
         try:
-            await message.reply_video(
+            await source_msg.reply_video(
                 video=output_path.open("rb"),
                 caption=(
                     "🎬 این هم نسخه‌ی فشرده‌شده.\n"
